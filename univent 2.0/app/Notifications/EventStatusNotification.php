@@ -48,7 +48,7 @@ class EventStatusNotification extends Notification
 
         if ($this->status === 'approved') {
             $mail->line('Event Anda sekarang sudah tayang dan bisa dilihat oleh seluruh mahasiswa/i Univent.')
-                 ->action('Lihat Event', url('/event-detail/' . $this->event->id)); // Sesuaikan url jika beda
+                 ->action('Lihat Event', url('events.show' . $this->event->id)); // Sesuaikan url jika beda
         } else {
             $mail->line('Sayang sekali, event Anda belum dapat ditayangkan untuk saat ini. Silakan hubungi Admin atau balas email ini untuk informasi lebih lanjut mengenai alasan penolakan.');
         }
@@ -61,9 +61,9 @@ class EventStatusNotification extends Notification
         $statusText = $this->status === 'approved' ? 'Disetujui' : 'Ditolak';
         
         return [
-            'title' => 'Pengajuan Event',
             'status' => $this->status,
             'message' => 'Event Anda <b>"' . $this->event->event_title . '"</b> telah <b>' . $statusText . '</b> oleh Admin.',
+            'event_id' => $this->event->id,
         ];
     }
 }

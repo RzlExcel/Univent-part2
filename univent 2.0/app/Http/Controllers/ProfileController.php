@@ -155,13 +155,12 @@ class ProfileController extends Controller
             foreach ($admins as $admin) {
                 FcmService::sendNotification(
                     $admin->fcm_token, 
-                    'Pengajuan EO Baru 📢', 
+                    'Pengajuan EO Baru', 
                     $user->name . ' mengajukan diri sebagai EO via Web.',
                     [
-                        'tipe' => 'pengajuan_eo' // 👈 TAMBAHKAN TIKET INI
+                        'tipe' => 'pengajuan_eo'
                     ]
                 );
-
             }
             // ------------------------------------
 
@@ -224,16 +223,14 @@ class ProfileController extends Controller
         // -----------------------------------
         FcmService::sendNotification(
             $user->fcm_token, 
-            'Pengajuan EO Disetujui! 🎉', 
-            'Selamat, pengajuan Upgrade EO kamu telah disetujui Admin.', // 👈 Koma saja, jangan dikurung dulu
+            'Pengajuan EO Disetujui!', 
+            'Selamat, pengajuan Upgrade EO kamu telah disetujui Admin.',
             [
-                'tipe' => 'eo_approved' // 👈 KITA BUAT TIKET KHUSUS
+                'tipe' => 'eo_approved'
             ]
         );
 
-
         return back()->with('success', 'Pengajuan EO berhasil disetujui!');
-        
     }
 
     /**
@@ -243,14 +240,22 @@ class ProfileController extends Controller
     {
         $user = User::findOrFail($id);
         
-        // Ubah status menjadi rejected
+        // 1. Ubah status menjadi rejected
         $user->eo_request_status = 'rejected';
+        
+        // 2. Hapus Role 'eo' dari user tersebut agar akses EO hilang
+        if ($user->hasRole('eo')) {
+            $user->removeRole('eo');
+        }
+        
         $user->save();
 
-        // --- TAMBAHAN NOTIFIKASI KE USER ---
+        // 3. --- TAMBAHAN NOTIFIKASI KE USER ---
         $user->notify(new \App\Notifications\EoRequestStatusNotification('rejected'));
         // -----------------------------------
-        FcmService::sendNotification($user->fcm_token, 'Pengajuan EO Ditolak 😔', 'Mohon maaf, pengajuan Upgrade EO kamu ditolak.');
-        return back()->with('success', 'Pengajuan EO berhasil ditolak.');
+        
+        FcmService::sendNotification($user->fcm_token, 'Pengajuan EO Ditolak', 'Mohon maaf, pengajuan Upgrade EO kamu ditolak.');
+        
+        return back()->with('success', 'Pengajuan EO berhasil ditolak dan akses EO dicabut.');
     }
 }

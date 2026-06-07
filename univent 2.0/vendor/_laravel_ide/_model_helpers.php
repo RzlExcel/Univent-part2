@@ -2877,7 +2877,6 @@ namespace App\Models {
      * @property mixed $resend_attempts
      * @property \Illuminate\Support\Carbon|null $updated_at
      * @property \Illuminate\Support\Carbon|null $created_at
-     * @property string|null $fcm_token
      * @property string|null $remember_token
      * @property \Illuminate\Support\Carbon|null $otp_expires_at
      * @property string|null $otp_code
@@ -2910,7 +2909,6 @@ namespace App\Models {
      * @method static \Illuminate\Database\Eloquent\Builder<User>|User whereOtpCode($value)
      * @method static \Illuminate\Database\Eloquent\Builder<User>|User whereOtpExpiresAt($value)
      * @method static \Illuminate\Database\Eloquent\Builder<User>|User whereRememberToken($value)
-     * @method static \Illuminate\Database\Eloquent\Builder<User>|User whereFcmToken($value)
      * @method static \Illuminate\Database\Eloquent\Builder<User>|User whereCreatedAt($value)
      * @method static \Illuminate\Database\Eloquent\Builder<User>|User whereUpdatedAt($value)
      * @method static \Illuminate\Database\Eloquent\Builder<User>|User whereResendAttempts($value)

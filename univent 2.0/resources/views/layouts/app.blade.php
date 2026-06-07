@@ -169,7 +169,17 @@
                                 <div class="max-h-[350px] overflow-y-auto">
                                     @if (auth()->user()->unreadNotifications->count() > 0)
                                         @foreach (auth()->user()->unreadNotifications as $notification)
-                                            <div class="p-4 border-b border-slate-50 hover:bg-slate-50 transition">
+                                            @php
+                                                // Cek apakah notifikasi berstatus rejected
+                                                $isRejected = isset($notification->data['status']) && $notification->data['status'] == 'rejected';
+                                            @endphp
+
+                                            @if($isRejected)
+                                                <div class="block p-4 border-b border-slate-50 bg-white opacity-80 transition cursor-default">
+                                            @else
+                                                <a href="{{ route('notifications.click', $notification->id) }}" class="block p-4 border-b border-slate-50 hover:bg-slate-50 transition cursor-pointer">
+                                            @endif
+                                            
                                                 <div class="flex gap-3">
                                                     <div class="flex-shrink-0 mt-1">
                                                         @if (isset($notification->data['status']) && $notification->data['status'] == 'approved')
@@ -207,7 +217,12 @@
                                                             class="text-[10px] font-bold text-slate-400 mt-1 block uppercase tracking-wider">{{ $notification->created_at->diffForHumans() }}</span>
                                                     </div>
                                                 </div>
-                                            </div>
+
+                                            @if($isRejected)
+                                                </div>
+                                            @else
+                                                </a>
+                                            @endif
                                         @endforeach
                                     @else
                                         <div class="p-8 text-center flex flex-col items-center justify-center">

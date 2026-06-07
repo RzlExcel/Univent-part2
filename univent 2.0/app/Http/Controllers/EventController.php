@@ -65,6 +65,7 @@ class EventController extends Controller
             'event_title' => 'required|string|max:255',
             'organizer_type' => 'required|string',
             'category_id' => 'required',
+            'new_category_name' => 'nullable|string|max:255',
             'event_description' => 'required|string',
             'start_date' => 'required|date',
             'start_time' => 'required',
@@ -74,6 +75,8 @@ class EventController extends Controller
             'registration_link' => 'nullable|url',
             'contact_person' => 'required|string',
             'event_poster' => 'required|image|mimes:jpg,jpeg,png|max:4096', 
+        ], [
+            'new_category_name.required_if' => 'Nama kategori baru wajib diisi jika memilih "Other".',
         ]);
 
         $user = Auth::user();

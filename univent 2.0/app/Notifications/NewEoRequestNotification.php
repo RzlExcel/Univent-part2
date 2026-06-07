@@ -33,7 +33,7 @@ class NewEoRequestNotification extends Notification
     public function toArray(object $notifiable): array
     {
         return [
-            'title' => 'Pengajuan Role Event Organizer',
+            'type'    => 'eo_request',
             'status' => 'pending',
             'message' => '<b>' . $this->userRequest->name . '</b> mengajukan diri sebagai Event Organizer.',
         ];
