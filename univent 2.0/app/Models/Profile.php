@@ -12,7 +12,7 @@ class Profile extends Model
         'user_id',
         'birthday',
         'phone',
-        'avatar',
+        
     ];
 
     protected $casts = [

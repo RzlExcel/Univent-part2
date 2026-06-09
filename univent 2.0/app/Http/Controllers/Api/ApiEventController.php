@@ -7,30 +7,70 @@ use App\Models\Event;
 use App\Models\EventOrganizer;
 use App\Models\User;
 use Illuminate\Http\Request;
+use App\Services\FcmService;
 use Carbon\Carbon;
 
 class ApiEventController extends Controller
 {
     public function getHomeData(Request $request)
     {
-        // 1. Ambil data statistik untuk counter box di atas
         $totalEvents = Event::where('status', 'approved')->count();
         $totalOrganizers = EventOrganizer::count();
         $totalUsers = User::where('is_active', true)->count();
 
-        // 2. Ambil 3 event terbaru sebagai rekomendasi khusus (FYP)
-        $recommendedEvents = Event::with(['eventOrganizer', 'category'])
-            ->where('status', 'approved')
-            ->latest()
-            ->take(3)
-            ->get()
-            ->map(function ($event) {
-                return $this->formatEvent($event);
-            });
+        // MESIN REKOMENDASI (PERSONALIZATION)
+        $userId = auth('sanctum')->id(); 
+        $ipAddress = $request->ip();
+        $userAgent = $request->userAgent();
 
-        // 3. Ambil semua event approved lainnya untuk daftar utama
+        $clickQuery = \DB::table('user_event_clicks')
+            ->join('events', 'user_event_clicks.event_id', '=', 'events.id')
+            ->where('user_event_clicks.created_at', '>=', now()->subDays(30));
+
+        if ($userId) {
+            $clickQuery->where('user_event_clicks.ip_address', $ipAddress); 
+        } else {
+            $clickQuery->where('user_event_clicks.ip_address', $ipAddress)
+                       ->where('user_event_clicks.user_agent', $userAgent);
+        }
+
+        $topCategories = $clickQuery->select('events.category_id', \DB::raw('count(*) as total_clicks'))
+            ->groupBy('events.category_id')
+            ->orderByDesc('total_clicks')
+            ->limit(2)
+            ->pluck('events.category_id');
+
+        $isPersonalized = false;
+        
+        // 👇 1. SARINGAN TANGGAL UNTUK RAK REKOMENDASI 👇
+        $recommendedQuery = Event::with(['eventOrganizer', 'category'])
+            ->where('status', 'approved')
+            ->where('end_date', '>=', today()); // Event kedaluwarsa dilarang masuk rekomendasi
+
+        if ($topCategories->isNotEmpty()) {
+            $recommendedQuery->whereIn('category_id', $topCategories);
+            $isPersonalized = true;
+        }
+
+        $recommendedEvents = $recommendedQuery->get()->map(function ($event) {
+            $points = 0;
+            if ($event->created_at && $event->created_at->diffInDays(now()) <= 3) {
+                $points += 15;
+            }
+            $endDate = \Carbon\Carbon::parse($event->end_date);
+            if (now()->diffInDays($endDate) <= 3) {
+                $points += 20;
+            }
+            $event->trending_points = $points;
+            return $event;
+        })->sortByDesc('trending_points')->take(5)->map(function ($event) {
+            return $this->formatEvent($event);
+        })->values();
+
+        // 👇 2. SARINGAN TANGGAL UNTUK DAFTAR UTAMA (SEMUA EVENT) 👇
         $allEvents = Event::with(['eventOrganizer', 'category'])
             ->where('status', 'approved')
+            ->where('end_date', '>=', today()) // 👈 INI KUNCI PENYELAMATNYA BOS!
             ->latest()
             ->get()
             ->map(function ($event) {
@@ -39,6 +79,7 @@ class ApiEventController extends Controller
 
         return response()->json([
             'success' => true,
+            'is_personalized' => $isPersonalized,
             'stats' => [
                 'total_events' => (string) $totalEvents,
                 'total_organizers' => (string) $totalOrganizers,
@@ -172,29 +213,39 @@ class ApiEventController extends Controller
                 return response()->json(['success' => false, 'message' => 'Unauthorized.'], 401);
             }
 
-            // Validasi input dasar
+            // 👇 1. SINKRONISASI VALIDASI: Hapus aturan 'integer' pada category_id agar bisa menerima string 'other'
             $request->validate([
                 'event_title' => 'required|string|max:255',
-                'category_id' => 'required|integer',
+                'category_id' => 'required', // 👈 Mengikuti standarisasi web
                 'start_date' => 'required|date',
                 'event_description' => 'required|string',
             ]);
 
-            // Tentukan status awal dan Organizer ID
-            $status = 'pending'; // Default harus di-ACC Admin dulu
+            $status = 'pending'; 
             $organizerId = null;
-            $organizerType = 'UKM / Himpunan'; // Default
+            $organizerType = 'UKM / Himpunan'; 
             $organizerName = $user->name;
 
-            // Cek apakah user adalah Admin
+            // 👇 2. LOGIKA KATEGORI ADAPTASI DARI KODE WEB BOS 👇
+            $finalCategoryId = null;
+
+            if ($request->category_id === 'other' || !is_numeric($request->category_id)) {
+                // Membuat kategori baru berstatus pending (Persis seperti kodingan web bos)
+                $newCat = \App\Models\Category::firstOrCreate(
+                    ['name' => $request->new_category_name],
+                    ['status' => 'pending'] // Menunggu restu Admin biar ga langsung mengotori database
+                );
+                $finalCategoryId = $newCat->id;
+            } else {
+                $finalCategoryId = $request->category_id;
+            }
+            // 👆 BATAS LOGIKA ADAPTASI WEB 👆
+
+            // Logika pengecekan role Admin / EO mobile
             $isAdmin = \App\Models\AccountRole::where('user_id', $user->id)->where('role_id', 1)->exists();
-            
             if ($isAdmin) {
-                // Jika Admin yang buat, bisa langsung berstatus 'approved' 
                 $status = 'approved';
                 $organizerName = 'Admin Univent';
-
-                // 👇 FIX: Buatkan/Cari data Organizer khusus untuk Admin 👇
                 $eo = \App\Models\EventOrganizer::where('user_id', $user->id)->first();
                 if (!$eo) {
                     $eo = \App\Models\EventOrganizer::create([
@@ -204,42 +255,35 @@ class ApiEventController extends Controller
                     ]);
                 }
                 $organizerId = $eo->id;
-
             } else {
-                // Cek data EO untuk user biasa
                 $eo = \App\Models\EventOrganizer::where('user_id', $user->id)->first();
-                
-                // JIKA DATA EO BELUM ADA, KITA BUATKAN OTOMATIS
                 if (!$eo) {
-                    // Pastikan dia memang punya role EO (role_id 2)
                     $isRoleEo = \App\Models\AccountRole::where('user_id', $user->id)->where('role_id', 2)->exists();
-                    
                     if ($isRoleEo) {
                         $eo = \App\Models\EventOrganizer::create([
                             'user_id' => $user->id,
-                            'name' => 'Organizer ' . $user->name, // Nama default
+                            'name' => 'Organizer ' . $user->name,
                             'contact_email' => $user->email,
                         ]);
                     } else {
                         return response()->json(['success' => false, 'message' => 'Akun Anda tidak terdaftar sebagai EO.'], 403);
                     }
                 }
-                
                 $organizerId = $eo->id;
                 $organizerName = $eo->name;
             }
 
-            $posterPath = 'default_poster.png'; // Nilai default jika user tidak upload
+            $posterPath = 'default_poster.png'; 
             if ($request->hasFile('event_poster')) {
-                // Simpan ke folder public/storage/posters
                 $posterPath = $request->file('event_poster')->store('posters', 'public');
             }
-            // Simpan ke database
+
+            // Simpan data event baru ke database
             $event = \App\Models\Event::create([
                 'event_organizer_id' => $organizerId,
                 'organizer_type' => $organizerType,
                 'organizer_name' => $organizerName,
-                'category_id' => $request->category_id,
+                'category_id' => $finalCategoryId, // 👈 ID Kategori hasil saringan di atas
                 'event_title' => $request->event_title,
                 'event_description' => $request->event_description,
                 'start_date' => $request->start_date,
@@ -250,27 +294,56 @@ class ApiEventController extends Controller
                 'registration_link' => $request->registration_link,
                 'contact_person' => $request->contact_person,
                 'status' => $status,
-                // Untuk gambar poster, kita hardcode dulu sementara jika tidak ada upload
                 'event_poster' => $posterPath, 
             ]);
 
+            // Pemicu FCM Notifikasi ke Admin
+            if (!$isAdmin) {
+                $adminIds = \App\Models\AccountRole::where('role_id', 1)->pluck('user_id');
+                $admins = \App\Models\User::whereIn('id', $adminIds)->get();
+                if ($admins->count() > 0) {
+                    foreach ($admins as $admin) {
+                        FcmService::sendNotification(
+                            $admin->fcm_token, 
+                            'Pengajuan Event Baru 📅', 
+                            'Terdapat pengajuan event baru via HP: ' . $event->event_title,
+                            [
+                                'tipe' => 'pengajuan_event',
+                                'event_id' => (string) $event->id
+                            ]
+                        );
+                    }
+                }
+            }
+
             return response()->json([
                 'success' => true,
-                'message' => 'Event berhasil diajukan!',
+                'message' => 'Event berhasil diajukan via Mobile!',
                 'data' => $event
             ], 201);
 
         } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Gagal submit: ' . $e->getMessage()
-            ], 500);
+            return response()->json(['success' => false, 'message' => 'Gagal submit via API: ' . $e->getMessage()], 500);
         }
     }
     public function getEventDetail($id)
     {
         try {
-            // Cari event berdasarkan ID beserta data penyelenggaranya
+            // 👇 PELACAK KLIK GAIB ANTI-CRASH 👇
+            // Menggunakan updateOrInsert agar terhindar dari Error Unique Key di Database
+            \DB::table('user_event_clicks')->updateOrInsert(
+                [
+                    'event_id' => $id,
+                    'ip_address' => request()->ip(),
+                    'user_agent' => request()->userAgent()
+                ],
+                [
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]
+            );
+            // 👆 BATAS PELACAK 👆
+
             $event = \App\Models\Event::with('eventOrganizer')->find($id);
 
             if (!$event) {
@@ -280,30 +353,22 @@ class ApiEventController extends Controller
                 ], 404);
             }
 
-            // Kita format datanya biar Flutter tinggal terima beres (termasuk format tanggal)
             $data = [
                 'id' => $event->id,
                 'status' => $event->status ?? 'pending',
                 'event_title' => $event->event_title ?? 'Tanpa Judul',
                 'event_poster' => $event->event_poster,
-                // Kalau ada tabel relasi category_name bisa disesuaikan, sementara kita fallback aman:
-                'category_name' => 'Event Category', 
+                'category_name' => $event->category->name ?? 'Event Category', 
                 'organizer_type' => strtoupper($event->organizer_type ?? 'ORGANIZATION'),
                 'organizer_name' => $event->organizer_name ?? ($event->eventOrganizer->name ?? 'Admin Univent'),
-                
-                // Format Tanggal (Contoh: 03 Apr 2026)
                 'start_date' => $event->start_date ? \Carbon\Carbon::parse($event->start_date)->translatedFormat('d M Y') : '-',
                 'end_date' => $event->end_date ? \Carbon\Carbon::parse($event->end_date)->translatedFormat('d M Y') : '-',
-                
-                // Format Jam (Contoh: 08:00 AM)
                 'start_time' => $event->start_time ? \Carbon\Carbon::parse($event->start_time)->format('h:i A') : '-',
                 'end_time' => $event->end_time ? \Carbon\Carbon::parse($event->end_time)->format('h:i A') : '-',
-                
                 'event_location' => $event->event_location ?? 'Belum ditentukan',
                 'registration_link' => $event->registration_link ?? '-',
                 'contact_person' => $event->contact_person ?? '-',
                 'event_description' => $event->event_description ?? '-',
-                
             ];
 
             return response()->json([
@@ -361,6 +426,22 @@ class ApiEventController extends Controller
             $event->status = $request->status;
             $event->save();
 
+            // Cari tahu siapa pemilik event ini berdasarkan event_organizer_id
+            $organizer = \App\Models\EventOrganizer::find($event->event_organizer_id);
+            
+            // Jika pemiliknya ketemu dan bukan Admin yang lagi login, kirim notif
+            if ($organizer && $organizer->user_id !== $user->id) {
+                $pemilikEvent = \App\Models\User::find($organizer->user_id);
+                if ($pemilikEvent) {
+                    // Pastikan kamu punya file notifikasi EventStatusNotification
+                    $pesanStatus = $request->status == 'approved' ? 'Disetujui' : 'Ditolak';
+                    $pemilikEvent->notify(new \App\Notifications\EventStatusNotification($event, $pesanStatus));
+                    $judulNotif = $request->status == 'approved' ? 'Event Disetujui! 🎉' : 'Event Ditolak 😔';
+                    $teksNotif = $request->status == 'approved' ? 'Event kamu sudah tayang di Univent.' : 'Mohon maaf, event kamu ditolak.';
+                    FcmService::sendNotification($pemilikEvent->fcm_token, $judulNotif, $teksNotif);
+                }
+            }
+
             return response()->json(['success' => true, 'message' => 'Status event berhasil diperbarui!']);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
@@ -382,6 +463,47 @@ class ApiEventController extends Controller
             $event->delete();
 
             return response()->json(['success' => true, 'message' => 'Event berhasil dihapus permanen!']);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+    public function generateDescription(Request $request)
+    {
+        $apiKey = env('GEMINI_API_KEY');
+
+        if (!$apiKey) {
+            return response()->json(['success' => false, 'message' => 'API Key tidak ditemukan.'], 500);
+        }
+
+        // Memakai model gemini-2.5-flash persis seperti web bos
+        $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" . $apiKey;
+
+        $prompt = "Buatkan deskripsi acara yang sangat menarik untuk mahasiswa Telkom University Purwokerto. 
+        Judul Event: '{$request->title}'
+        Kategori: '{$request->category_name}'.";
+
+        try {
+            $response = \Illuminate\Support\Facades\Http::withoutVerifying()->post($url, [
+                'contents' => [
+                    ['parts' => [['text' => $prompt]]]
+                ]
+            ]);
+
+            if ($response->successful()) {
+                $result = $response->json();
+                $description = $result['candidates'][0]['content']['parts'][0]['text'] ?? 'Gagal generate teks.';
+                
+                return response()->json([
+                    'success' => true, 
+                    'description' => trim($description)
+                ]);
+            }
+
+            return response()->json([
+                'success' => false, 
+                'message' => 'Server AI Google sedang sibuk, silakan coba beberapa saat lagi!'
+            ], 500);
+
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }

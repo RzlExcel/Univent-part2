@@ -8,6 +8,8 @@ use Illuminate\View\View;
 use Illuminate\Http\RedirectResponse; 
 use App\Models\User;
 use App\Models\Role; // Fix: Menggunakan huruf kapital 'R' untuk standar model Laravel
+use Illuminate\Support\Facades\Storage; // <-- Wajib ditambahkan untuk hapus file fisik
+use App\Services\FcmService;
 
 class ProfileController extends Controller
 {
@@ -57,11 +59,12 @@ class ProfileController extends Controller
             return redirect()->route('login');
         }
 
+        // UBAH VALIDASI: Ganti new_avatar_temp menjadi avatar_file (Upload Fisik)
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'phone' => 'nullable|string|max:15|regex:/^(\+?\d{1,15})$/',
             'birthday' => 'nullable|date',
-            'new_avatar_temp' => 'nullable|string',   
+            'avatar_file' => 'nullable|image|mimes:jpeg,png,jpg|max:3072', 
             'remove_avatar' => 'nullable|boolean',
         ]);
 
@@ -69,22 +72,31 @@ class ProfileController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | HANDLE AVATAR
+        | HANDLE AVATAR (FILE STORAGE MURNI)
         |--------------------------------------------------------------------------
         */
 
+        // Jika user mencentang hapus avatar
         if ($request->remove_avatar == 1) {
+            // Hapus file fisik dari folder storage jika BUKAN base64
+            if ($user->avatar && strlen($user->avatar) < 200) {
+                Storage::disk('public')->delete($user->avatar);
+            }
             $user->avatar = null;
         }
 
-        if ($request->filled('new_avatar_temp')) {
-            $temp = $request->input('new_avatar_temp');
-            $base64 = is_string($temp) ? $temp : '';
-            if (str_contains($base64, ',')) {
-                $parts = explode(',', $base64);
-                $base64 = $parts[1] ?? $base64;
+        // Jika user meng-upload foto profil baru
+        if ($request->hasFile('avatar_file')) {
+            // Hapus file fisik lama dulu jika ada dan bukan base64
+            if ($user->avatar && strlen($user->avatar) < 200) {
+                Storage::disk('public')->delete($user->avatar);
             }
-            $user->avatar = $base64;
+            
+            // Simpan foto baru ke folder storage/app/public/avatars
+            $path = $request->file('avatar_file')->store('avatars', 'public');
+            
+            // Simpan path tersebut ke database
+            $user->avatar = $path;
         }
 
         $user->save();
@@ -139,6 +151,17 @@ class ProfileController extends Controller
             // --- TAMBAHAN NOTIFIKASI KE ADMIN ---
             $admins = \App\Models\User::where('id', 1)->get();
             \Illuminate\Support\Facades\Notification::send($admins, new \App\Notifications\NewEoRequestNotification($user));
+
+            foreach ($admins as $admin) {
+                FcmService::sendNotification(
+                    $admin->fcm_token, 
+                    'Pengajuan EO Baru', 
+                    $user->name . ' mengajukan diri sebagai EO via Web.',
+                    [
+                        'tipe' => 'pengajuan_eo'
+                    ]
+                );
+            }
             // ------------------------------------
 
             return back()->with('success', 'Formulir berhasil dikirim! Silakan tunggu Admin menghubungi Anda.');
@@ -198,6 +221,14 @@ class ProfileController extends Controller
         // --- TAMBAHAN NOTIFIKASI KE USER ---
         $user->notify(new \App\Notifications\EoRequestStatusNotification('approved'));
         // -----------------------------------
+        FcmService::sendNotification(
+            $user->fcm_token, 
+            'Pengajuan EO Disetujui!', 
+            'Selamat, pengajuan Upgrade EO kamu telah disetujui Admin.',
+            [
+                'tipe' => 'eo_approved'
+            ]
+        );
 
         return back()->with('success', 'Pengajuan EO berhasil disetujui!');
     }
@@ -209,14 +240,22 @@ class ProfileController extends Controller
     {
         $user = User::findOrFail($id);
         
-        // Ubah status menjadi rejected
+        // 1. Ubah status menjadi rejected
         $user->eo_request_status = 'rejected';
+        
+        // 2. Hapus Role 'eo' dari user tersebut agar akses EO hilang
+        if ($user->hasRole('eo')) {
+            $user->removeRole('eo');
+        }
+        
         $user->save();
 
-        // --- TAMBAHAN NOTIFIKASI KE USER ---
+        // 3. --- TAMBAHAN NOTIFIKASI KE USER ---
         $user->notify(new \App\Notifications\EoRequestStatusNotification('rejected'));
         // -----------------------------------
-
-        return back()->with('success', 'Pengajuan EO berhasil ditolak.');
+        
+        FcmService::sendNotification($user->fcm_token, 'Pengajuan EO Ditolak', 'Mohon maaf, pengajuan Upgrade EO kamu ditolak.');
+        
+        return back()->with('success', 'Pengajuan EO berhasil ditolak dan akses EO dicabut.');
     }
 }

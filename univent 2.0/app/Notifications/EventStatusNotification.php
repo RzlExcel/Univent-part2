@@ -61,6 +61,7 @@ class EventStatusNotification extends Notification
         $statusText = $this->status === 'approved' ? 'Disetujui' : 'Ditolak';
         
         return [
+            'title' => 'Pengajuan Event',
             'status' => $this->status,
             'message' => 'Event Anda <b>"' . $this->event->event_title . '"</b> telah <b>' . $statusText . '</b> oleh Admin.',
         ];

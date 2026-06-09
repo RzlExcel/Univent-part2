@@ -9,8 +9,10 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 use Illuminate\Http\RedirectResponse;
-use Carbon\Carbon; // <-- Tambahan untuk manipulasi waktu/tanggal
+use Carbon\Carbon; 
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
+use App\Services\FcmService; 
 
 class EventController extends Controller
 {
@@ -39,9 +41,20 @@ class EventController extends Controller
             /** @var Event $event */
             $event = Event::findOrFail($eventId);
 
-            $isOwner = EventRegistration::where('event_id', $event->id)
+            // 🔍 Ambil data EO user Web
+            $eo = \App\Models\EventOrganizer::where('user_id', Auth::id())->first();
+
+            // 🔴 LOGIKA GABUNGAN BULLETPROOF (Sinkronisasi Web + Mobile) 🔴
+            $isOwnerByEo = $eo && ($event->event_organizer_id == $eo->id);
+            $isOwnerByDirect = ($event->user_id == Auth::id());
+            
+            // Cek fallback ke tabel registrasi (Jalur Mobile)
+            $isOwnerByRegistration = \App\Models\EventRegistration::where('event_id', $event->id)
                 ->where('user_id', Auth::id())
                 ->exists();
+
+            // Jika salah satu dari 3 cara di atas benar, maka dia ADALAH PEMILIK SAH!
+            $isOwner = $isOwnerByEo || $isOwnerByDirect || $isOwnerByRegistration;
 
             if (! $isOwner) {
                 return redirect()->route('user.event.history')->with('error', 'Anda tidak berhak mengubah event ini.');
@@ -51,16 +64,14 @@ class EventController extends Controller
                 return redirect()->route('user.event.history')->with('error', 'Event yang sudah disetujui tidak dapat diubah.');
             }
         }
-        // 2. Ambil daftar kategori yang disetujui untuk dropdown
+        
         $categories = \App\Models\Category::where('status', 'approved')->get();
-        // 3. Ambil data EO untuk pre-fill jika user sudah terdaftar sebagai EO
         $eo = \App\Models\EventOrganizer::where('user_id', Auth::id())->first();
         return view('submit-event', compact('event', 'categories', 'eo'));
     }
 
     public function store(Request $request): RedirectResponse
     {
-        // 1. Validasi (Hapus eo_name, sesuaikan organizer_type)
         $request->validate([
             'event_title' => 'required|string|max:255',
             'organizer_type' => 'required|string',
@@ -73,59 +84,50 @@ class EventController extends Controller
             'event_location' => 'required|string',
             'registration_link' => 'nullable|url',
             'contact_person' => 'required|string',
-            'event_poster' => 'required|image|mimes:jpg,jpeg,png|max:4096', // Tambahkan required
+            'event_poster' => 'required|image|mimes:jpg,jpeg,png|max:4096', 
         ]);
 
         $user = Auth::user();
 
-        // 2. Ambil atau Buat Profil EO dengan Nama User
         $eo = \App\Models\EventOrganizer::where('user_id', $user->id)->first();
         if (!$eo) {
             $eo = \App\Models\EventOrganizer::create([
                 'user_id' => $user->id,
-                'name' => $user->name, // Mengambil nama dari profil user
+                'name' => $user->name, 
                 'description' => $request->organizer_type,
             ]);
         }
 
-        // logika kategori baru
         $finalCategoryId = null;
         $categoryName = '';
 
         if ($request->category_id === 'other') {
-            // Jika kategori baru, buat record di tabel categories agar kita dapat ID-nya
             $newCat = \App\Models\Category::firstOrCreate(
                 ['name' => $request->new_category_name],
-                ['status' => 'pending'] // Set pending karena perlu persetujuan admin
+                ['status' => 'pending'] 
             );
             $finalCategoryId = $newCat->id;
             $categoryName = $newCat->name;
         } else {
-            // Jika pilih dari dropdown, ambil ID dan namanya
             $finalCategoryId = $request->category_id;
             $cat = \App\Models\Category::find($request->category_id);
             $categoryName = $cat ? $cat->name : 'Unknown';
         }
 
-        $posterData = null;
+        // --- UBAH MENJADI FILE STORAGE MURNI ---
+        $posterPath = null;
         if ($request->hasFile('event_poster')) {
-            $file = $request->file('event_poster');
-            if ($file && $file->getRealPath()) {
-                $content = file_get_contents($file->getRealPath());
-                if ($content !== false) {
-                    $posterData = base64_encode($content);
-                }
-            }
+            // Langsung simpan file ke storage/app/public/posters
+            $posterPath = $request->file('event_poster')->store('posters', 'public');
         }
 
-        // SIMPAN KE DATABASE
         $event = Event::create([
             'user_id' => $user->id,
             'event_organizer_id' => $eo->id,
             'category_id' => $finalCategoryId,
             'event_title' => $request->event_title,
-            'organizer_name' => $user->name, // Gunakan nama user
-            'organizer_type' => $request->organizer_type, // Input dari dropdown
+            'organizer_name' => $user->name, 
+            'organizer_type' => $request->organizer_type, 
             'event_category' => $categoryName,
             'event_description' => $request->event_description,
             'start_date' => $request->start_date,
@@ -135,9 +137,9 @@ class EventController extends Controller
             'event_location' => $request->event_location,
             'registration_link' => $request->registration_link,
             'contact_person' => $request->contact_person,
-            'event_poster' => $posterData,
+            'event_poster' => $posterPath, // <- Masukkan path gambar di sini
             'status' => 'pending',
-    ]);
+        ]);
 
         if (Auth::check()) {
             EventRegistration::create([
@@ -147,21 +149,33 @@ class EventController extends Controller
             ]);
         }
         
-        // --- TAMBAHAN NOTIFIKASI KE ADMIN ---
-        // Cari akun admin (berdasarkan ID 1 dari database-mu)
-        $admins = \App\Models\User::where('id', 1)->get(); 
-        \Illuminate\Support\Facades\Notification::send($admins, new \App\Notifications\NewEventSubmittedNotification($event));
-        // ------------------------------------
+        if ($user->id != 1) {
+            $admins = \App\Models\User::where('id', 1)->get(); 
+            if ($admins->count() > 0) {
+                \Illuminate\Support\Facades\Notification::send($admins, new \App\Notifications\NewEventSubmittedNotification($event));
+                foreach ($admins as $admin) {
+                    FcmService::sendNotification(
+                        $admin->fcm_token, 
+                        'Pengajuan Event Baru 📅', 
+                        'Terdapat pengajuan event baru via Web dari ' . $user->name
+                    );
+                }
+            }
+        } else {
+            // (Opsional) Jika Admin yang bikin event, statusnya bisa langsung di-approve
+            $event->update(['status' => 'approved']);
+            
+            // Atau cukup biarkan saja tanpa mengirim notif "menunggu persetujuan"
+        }
 
         return redirect()->route('dashboard')->with('success', 'Event berhasil disubmit dan terdaftar!');
     }
 
     public function update(Request $request, int $id): RedirectResponse
     {
-        // 1. Validasi disesuaikan dengan form baru (tanpa eo_name & eo_description)
         $request->validate([
             'event_title' => 'required|string|max:255',
-            'organizer_type' => 'required|string', // <-- Menggunakan input dropdown
+            'organizer_type' => 'required|string', 
             'category_id' => 'required',
             'event_description' => 'required|string',
             'start_date' => 'required|date',
@@ -171,27 +185,33 @@ class EventController extends Controller
             'event_location' => 'required|string',
             'registration_link' => 'nullable|url',
             'contact_person' => 'required|string',
-            'event_poster' => 'nullable|image|mimes:jpg,jpeg,png|max:4096', // Tetap nullable saat update
+            'event_poster' => 'nullable|image|mimes:jpg,jpeg,png|max:4096', 
         ]);
 
         $event = Event::findOrFail($id);
         $user = Auth::user();
 
-        // 2. Cek status dan hak akses
         if ($event->status !== 'pending') {
             return redirect()->route('user.event.history')->with('error', 'Event yang sudah disetujui tidak dapat diubah.');
         }
 
-        $isOwner = EventRegistration::where('event_id', $event->id)
+        $eo = \App\Models\EventOrganizer::where('user_id', $user->id)->first();
+
+        // 🔴 LOGIKA GABUNGAN BULLETPROOF (Sinkronisasi Web + Mobile) 🔴
+        $isOwnerByEo = $eo && ($event->event_organizer_id == $eo->id);
+        $isOwnerByDirect = ($event->user_id == $user->id);
+        
+        // Cek fallback ke tabel registrasi (Jalur Mobile)
+        $isOwnerByRegistration = \App\Models\EventRegistration::where('event_id', $event->id)
             ->where('user_id', $user->id)
             ->exists();
+
+        $isOwner = $isOwnerByEo || $isOwnerByDirect || $isOwnerByRegistration;
 
         if (! $isOwner) {
             return redirect()->route('user.event.history')->with('error', 'Anda tidak berhak mengubah event ini.');
         }
 
-        // 3. Logika Organizer (Ambil dari data user yang sedang login)
-        $eo = \App\Models\EventOrganizer::where('user_id', $user->id)->first();
         if (!$eo) {
             $eo = \App\Models\EventOrganizer::create([
                 'user_id' => $user->id,
@@ -199,11 +219,9 @@ class EventController extends Controller
                 'description' => $request->organizer_type,
             ]);
         } else {
-            // Update tipe organisasi jika diubah
             $eo->update(['description' => $request->organizer_type]);
         }
 
-        // 4. Logika Kategori
         $finalCategoryId = null;
         $categoryName = '';
 
@@ -220,24 +238,23 @@ class EventController extends Controller
             $categoryName = $cat ? $cat->name : 'Unknown';
         }
 
-        // 5. Logika Poster (Pakai yang lama jika tidak ada upload baru)
-        $posterData = $event->event_poster;
+        // --- UBAH MENJADI FILE STORAGE MURNI & HAPUS FILE LAMA ---
+        $posterPath = $event->event_poster;
         if ($request->hasFile('event_poster')) {
-            $file = $request->file('event_poster');
-            if ($file && $file->getRealPath()) {
-                $content = file_get_contents($file->getRealPath());
-                if ($content !== false) {
-                    $posterData = base64_encode($content);
-                }
+            // Jika poster lama bukan base64 (string pendek), hapus fisik file lamanya
+            if ($posterPath && strlen($posterPath) < 200) {
+                Storage::disk('public')->delete($posterPath);
             }
+            
+            // Simpan gambar yang baru
+            $posterPath = $request->file('event_poster')->store('posters', 'public');
         }
 
-        // 6. Simpan perubahan ke Database
         $event->update([
             'event_organizer_id' => $eo->id,
             'category_id' => $finalCategoryId,
             'event_title' => $request->event_title,
-            'organizer_name' => $user->name, // Selalu gunakan nama dari profil user
+            'organizer_name' => $user->name, 
             'organizer_type' => $request->organizer_type,
             'event_category' => $categoryName,
             'event_description' => $request->event_description,
@@ -248,7 +265,7 @@ class EventController extends Controller
             'event_location' => $request->event_location,
             'registration_link' => $request->registration_link,
             'contact_person' => $request->contact_person,
-            'event_poster' => $posterData,
+            'event_poster' => $posterPath, // <- Masukkan path gambar di sini
         ]);
 
         return redirect()->route('user.event.history')->with('success', 'Event berhasil diperbarui!');
@@ -256,37 +273,36 @@ class EventController extends Controller
 
     public function index(): View
     {
-        // 1. Ambil semua event aktif beserta jumlah kliknya
+        // 1. Saring event aktif untuk keperluan kalkulasi trending points
         $activeEvents = Event::where('status', 'approved')
             ->where('end_date', '>=', today())
             ->withCount('clicks') 
             ->get();
 
-        // 2. Terapkan Kalkulator Poin
         $trendingEvents = $activeEvents->map(function ($event) {
-            // A. Poin Dasar: 1 Klik = 5 Poin
             $points = $event->clicks_count * 5;
 
-            // B. Poin Kebaruan: Tambah 15 poin jika event dibuat <= 3 hari yang lalu
             if ($event->created_at && $event->created_at->diffInDays(now()) <= 3) {
                 $points += 15;
             }
 
-            // C. Poin Urgency: Tambah 20 poin jika event akan kadaluarsa <= 3 hari lagi
             $endDate = Carbon::parse($event->end_date);
             if (now()->diffInDays($endDate) <= 3) {
                 $points += 20;
             }
 
-            // Simpan poin sementara ke objek event
             $event->trending_points = $points;
             
             return $event;
         })
-        ->sortByDesc('trending_points') // Urutkan dari poin tertinggi
-        ->take(3); // Ambil Top 3
+        ->sortByDesc('trending_points') 
+        ->take(3); 
 
-        $events = Event::where('status', 'approved')->latest()->get();
+        // 2. 🔴 PERBAIKAN UTAMA: Tambahkan saringan tanggal yang sama seperti di fungsi browse 🔴
+        $events = Event::where('status', 'approved')
+            ->where('end_date', '>=', today()) // 👈 BARIS SAKTI INI YANG WAJIB ADA BOS!
+            ->latest()
+            ->get();
 
         return view('dashboard.dashboard', compact('trendingEvents', 'events'));
     }
@@ -297,12 +313,15 @@ class EventController extends Controller
 
         $ipAddress = $request->ip();
         $userAgent = $request->userAgent();
+        $userId = Auth::id();
 
         DB::table('user_event_clicks')->updateOrInsert(
             [
                 'event_id' => $event->id,
                 'ip_address' => $ipAddress,
-                'user_agent' => $userAgent
+                'user_agent' => $userAgent,
+                'user_id'    => $userId
+                
             ],
             [
                 'created_at' => now(), 
@@ -315,7 +334,6 @@ class EventController extends Controller
 
     public function browse(Request $request): View 
     {
-        // 1. Tangkap semua input dari form (Search, Kategori, Organizer)
         $search = $request->query('search'); 
         $category = $request->query('category');
         $organizer = $request->query('organizer');
@@ -323,20 +341,9 @@ class EventController extends Controller
         $recommendedEvents = collect(); 
         $isPersonalized = false; 
 
-        // Daftar kategori utama (untuk logika "Other")
         $mainCategories = ['Seminar', 'Workshop', 'Competition', 'Gathering'];
 
-        /**
-         * FUNGSI PENYARING (CLOSURE)
-         * Kita buat fungsi ini agar filter Search, Category, dan Organizer 
-         * bisa langsung diterapkan ke Main Query, Recommended, maupun Cold Start 
-         * tanpa harus menulis ulang kode if-else berkali-kali.
-         */
-        /**
-         * FUNGSI PENYARING (CLOSURE)
-         */
         $applyFilters = function ($query) use ($search, $category, $organizer, $mainCategories) {
-            // A. Filter Search Bar
             if ($search) {
                 $query->where(function ($q) use ($search) {
                     $q->where('event_title', 'LIKE', "%{$search}%")
@@ -345,54 +352,49 @@ class EventController extends Controller
                 });
             }
 
-            // B. Filter Kategori (Perbaikan berdasarkan category_id)
             if ($category) {
                 if ($category === 'Other') {
-                    // 1. Cari tahu ID dari kategori utama (Seminar, Workshop, dll)
                     $mainCatIds = \App\Models\Category::whereIn('name', $mainCategories)->pluck('id');
-                    // 2. Singkirkan event yang memiliki ID tersebut
                     $query->whereNotIn('category_id', $mainCatIds);
                 } else {
-                    // Cari ID dari kategori spesifik yang dicari user
                     $catId = \App\Models\Category::where('name', $category)->value('id');
                     $query->where('category_id', $catId);
                 }
             }
 
-            // C. Filter Organizer
             if ($organizer) {
                 $query->where('organizer_type', $organizer);
             }
         };
 
-
-        // ==========================================
-        // 1. QUERY SEMUA EVENT UTAMA
-        // ==========================================
         $eventsQuery = Event::where('status', 'approved')
             ->where('end_date', '>=', today());
             
-        $applyFilters($eventsQuery); // Terapkan saringan
+        $applyFilters($eventsQuery); 
         
         $events = $eventsQuery->latest()->get();
 
-
-        // ==========================================
-        // 2. QUERY REKOMENDASI FYP (Personalisasi)
-        // ==========================================
         $ipAddress = $request->ip();
         $userAgent = $request->userAgent();
 
-        $topCategories = DB::table('user_event_clicks')
-            ->join('events', 'user_event_clicks.event_id', '=', 'events.id')
-            ->where('user_event_clicks.ip_address', $ipAddress)
-            ->where('user_event_clicks.user_agent', $userAgent)
-            ->where('user_event_clicks.created_at', '>=', now()->subDays(30))
-            ->select('events.category_id', DB::raw('count(*) as total_clicks'))
-            ->groupBy('events.category_id')
-            ->orderByDesc('total_clicks')
-            ->limit(2)
-            ->pluck('events.category_id');
+        $topCategoriesQuery = DB::table('user_event_clicks')
+                ->join('events', 'user_event_clicks.event_id', '=', 'events.id')
+                ->where('user_event_clicks.created_at', '>=', now()->subDays(30));
+
+            if (Auth::check()) {
+                // Jika login, kunci murni berdasarkan akunnya! Device sama tidak akan ngaruh
+                $topCategoriesQuery->where('user_event_clicks.user_id', Auth::id());
+            } else {
+                // Jika guest/belum login, baru deteksi lewat IP & Device
+                $topCategoriesQuery->where('user_event_clicks.ip_address', $ipAddress)
+                                ->where('user_event_clicks.user_agent', $userAgent);
+            }
+
+            $topCategories = $topCategoriesQuery->select('events.category_id', DB::raw('count(*) as total_clicks'))
+                ->groupBy('events.category_id')
+                ->orderByDesc('total_clicks')
+                ->limit(2)
+                ->pluck('events.category_id');
 
         if ($topCategories->isNotEmpty()) {
             $recommendedQuery = Event::where('status', 'approved')
@@ -400,9 +402,8 @@ class EventController extends Controller
                 ->where('end_date', '>=', today())
                 ->withCount('clicks'); 
 
-            $applyFilters($recommendedQuery); // Terapkan saringan
+            $applyFilters($recommendedQuery); 
 
-            // Terapkan Kalkulator Poin pada hasil Personalisasi
             $recommendedEvents = $recommendedQuery->get()->map(function ($event) {
                 $points = $event->clicks_count * 5; 
                 
@@ -424,18 +425,13 @@ class EventController extends Controller
             }
         }
 
-
-        // ==========================================
-        // 3. COLD START (Algoritma Trending)
-        // ==========================================
         if ($recommendedEvents->isEmpty()) {
             $coldStartQuery = Event::where('status', 'approved')
                 ->where('end_date', '>=', today())
                 ->withCount('clicks'); 
             
-            $applyFilters($coldStartQuery); // Terapkan saringan
+            $applyFilters($coldStartQuery); 
 
-            // Terapkan Kalkulator Poin pada Cold Start
             $recommendedEvents = $coldStartQuery->get()->map(function ($event) {
                 $points = $event->clicks_count * 5; 
                 
@@ -457,29 +453,32 @@ class EventController extends Controller
     }
 
     public function showHistory(): View|RedirectResponse
-    {
-        if (! Auth::check()) {
-            return redirect()->route('login');
-        }
-        $userId = Auth::id();
-        $registrations = EventRegistration::where('user_id', $userId)
-            ->with('event')
+{
+    if (! Auth::check()) {
+        return redirect()->route('login');
+    }
+
+    $userId = Auth::id();
+
+    // 1. Cari dulu profil Event Organizer (EO) berdasarkan user yang sedang login
+    $eo = \App\Models\EventOrganizer::where('user_id', $userId)->first();
+
+    if ($eo) {
+        // 2. Jika ketemu, ambil seluruh event yang PERNAH DIA UPLOAD/BUAT sendiri
+        $events = \App\Models\Event::where('event_organizer_id', $eo->id)
             ->latest()
             ->paginate(10);
-
-        return view('event-history', compact('registrations'));
+    } else {
+        // 3. Jika bukan akun EO (user biasa), passing data kosong agar tidak error
+        $events = \App\Models\Event::where('id', 0)->paginate(10);
     }
 
-    public function showRegistration(int $id): View
-    {
-        $registration = EventRegistration::with('event')
-            ->where('user_id', Auth::id())
-            ->findOrFail($id);
+    // Kita kirimkan variabel bernama $events ke dalam view
+    return view('event-history', compact('events'));
+}
 
-        return view('registration-detail', compact('registration'));
-    }
+    
 
-    // Tambahkan fungsi ini di dalam class EventController
     public function generateDescription(Request $request)
     {
         $apiKey = env('GEMINI_API_KEY');
@@ -488,7 +487,6 @@ class EventController extends Controller
             return response()->json(['success' => false, 'message' => 'API Key tidak ditemukan.'], 500);
         }
 
-        // Gunakan versi Lite yang biasanya memiliki jatah kuota lebih besar di Free Tier
         $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" . $apiKey;
 
         $prompt = "Buatkan deskripsi acara yang sangat menarik untuk mahasiswa Telkom University Purwokerto. 
@@ -504,7 +502,6 @@ class EventController extends Controller
 
             if ($response->successful()) {
                 $result = $response->json();
-                // Struktur JSON Gemini biasanya tetap sama
                 $description = $result['candidates'][0]['content']['parts'][0]['text'] ?? 'Gagal generate teks.';
                 
                 return response()->json([

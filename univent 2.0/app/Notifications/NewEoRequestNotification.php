@@ -23,7 +23,7 @@ class NewEoRequestNotification extends Notification
 
     public function toMail(object $notifiable): MailMessage
     {
-        return (new MailMessage)
+        return (new MailMessage)    
                     ->subject('Pengajuan Event Organizer (EO) Baru')
                     ->greeting('Halo Admin!')
                     ->line('Pengguna bernama ' . $this->userRequest->name . ' baru saja mengajukan diri sebagai Event Organizer dengan nama instansi: ' . $this->userRequest->eo_org_name . '.')
@@ -33,6 +33,7 @@ class NewEoRequestNotification extends Notification
     public function toArray(object $notifiable): array
     {
         return [
+            'title' => 'Pengajuan Role Event Organizer',
             'status' => 'pending',
             'message' => '<b>' . $this->userRequest->name . '</b> mengajukan diri sebagai Event Organizer.',
         ];

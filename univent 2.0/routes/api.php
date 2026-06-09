@@ -9,6 +9,7 @@ Route::post('/register', [ApiAuthController::class, 'register']);
 Route::post('/login', [ApiAuthController::class, 'login']);
 Route::post('/verify-otp', [ApiAuthController::class, 'verifyOtp']);
 Route::post('/resend-otp', [ApiAuthController::class, 'resendOtp']);
+Route::post('/login-google', [\App\Http\Controllers\Api\ApiAuthController::class, 'loginGoogle']);
 // API untuk Forgot & Reset Password
 Route::post('/forgot-password', [ApiAuthController::class, 'forgotPassword']);
 Route::post('/reset-password', [ApiAuthController::class, 'resetPassword']);
@@ -31,7 +32,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\CheckTokenExpiry::class]
                 'role' => $user->role_name ?? 'USER', 
                 'phone' => $user->profile?->phone ?? 'Belum diatur',
                 'birthday' => $user->profile?->birthday ? $user->profile->birthday->format('Y-m-d') : 'Belum diatur',
-                'avatar' => $user->profile?->avatar,
+                'avatar' => $user->avatar,
             ]
         ], 200);
     });
@@ -45,6 +46,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\CheckTokenExpiry::class]
     Route::get('/event-history', [App\Http\Controllers\Api\ApiEventController::class, 'getEventHistory']);
 // API untuk Submit Event Baru
     Route::post('/event/submit', [App\Http\Controllers\Api\ApiEventController::class, 'submitEvent']);
+    Route::post('/event/generate-description', [App\Http\Controllers\Api\ApiEventController::class, 'generateDescription']);
 // API untuk Ambil Detail 1 Event
     Route::get('/event-detail/{id}', [App\Http\Controllers\Api\ApiEventController::class, 'getEventDetail']);
 Route::put('/event-update/{id}', [ApiEventController::class, 'updateEvent']);
@@ -58,6 +60,15 @@ Route::put('/event-update/{id}', [ApiEventController::class, 'updateEvent']);
     Route::post('/admin/eo-requests/{id}/reject', [App\Http\Controllers\Api\ApiAdminController::class, 'rejectEoRequest']);
 // --- API CONTACT US 
 Route::post('/contact-us', [App\Http\Controllers\Api\ApiContactController::class, 'store']);
+// Notifikasi
+Route::get('/notifications', [\App\Http\Controllers\Api\ApiNotificationController::class, 'index']);
+Route::post('/notifications/read', [\App\Http\Controllers\Api\ApiNotificationController::class, 'markAsRead']);
+Route::get('/notifications/unread-count', [\App\Http\Controllers\Api\ApiNotificationController::class, 'unreadCount']);
+Route::delete('/notifications/clear-all', [\App\Http\Controllers\Api\ApiNotificationController::class, 'clearAll']);
+Route::post('/update-fcm-token', [ApiAuthController::class, 'updateFcmToken']);
+
+
+
 
     
     });

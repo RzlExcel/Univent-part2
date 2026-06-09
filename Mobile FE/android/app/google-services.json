@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "405536833700",
+    "project_id": "univent-b64e0",
+    "storage_bucket": "univent-b64e0.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:405536833700:android:8778ca4b189822be396631",
+        "android_client_info": {
+          "package_name": "com.example.univent"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "405536833700-rkhqavkq13t7k07k82fo1dctdjtfor9m.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.univent",
+            "certificate_hash": "937ab6cf3c661d5869234446a9988d0896a0d876"
+          }
+        },
+        {
+          "client_id": "405536833700-rjho409qcqa01s9b21bum9nvgom7najs.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBz1K_7jcFsWzfnWz5sZV-KsNpLnvIXQeU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "405536833700-rjho409qcqa01s9b21bum9nvgom7najs.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

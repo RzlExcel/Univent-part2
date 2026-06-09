@@ -6,10 +6,12 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\Role;
 use App\Services\OtpService;
+use App\Services\FcmService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
-
+use Intervention\Image\Facades\Image;
+use Illuminate\Support\Facades\Storage;
 class ApiAuthController extends Controller
 {
     protected OtpService $otpService;
@@ -226,21 +228,21 @@ class ApiAuthController extends Controller
     public function getUserProfile(Request $request)
     {
         try {
-            $user = $request->user();
-            
-            // 1. Tarik data profil tambahan berdasarkan user_id
+\Illuminate\Support\Facades\Log::info("User Avatar Path: " . $user->avatar);            
+            // Tarik data profil tambahan (untuk no HP & tanggal lahir)
             $profile = \App\Models\Profile::where('user_id', $user->id)->first();
 
-            // 2. Ubah data user menjadi array agar bisa disisipkan data baru
             $userData = $user->toArray();
             
-            // 3. Sisipkan data dari tabel profiles ke dalam array user
+            // Sisipkan data dari tabel profiles (hanya phone & birthday)
             $userData['phone'] = $profile ? $profile->phone : null;
             $userData['birthday'] = ($profile && $profile->birthday) ? date('Y-m-d', strtotime($profile->birthday)) : null;
-            $userData['avatar'] = $profile ? $profile->avatar : null;
+            
+            // 👇 FIX UTAMA: Ambil avatar langsung dari tabel USERS 👇
+            $userData['avatar'] = $user->avatar;
 
-            // (Jika sebelumnya kamu punya kode untuk menarik Role, biarkan kodenya di bawah sini)
             $userData['role'] = $user->role_name ?? 'USER';
+            
             return response()->json([
                 'success' => true,
                 'user' => $userData
@@ -253,6 +255,7 @@ class ApiAuthController extends Controller
             ], 500);
         }
     }
+
     public function updateProfile(Request $request)
     {
         try {
@@ -265,22 +268,38 @@ class ApiAuthController extends Controller
                 'avatar' => 'nullable|image|mimes:jpeg,png,jpg|max:4096',
             ]);
 
-            // Update nama
+            // 1. Update data dasar di tabel users
             $user->name = $request->name;
-            $user->save();
 
-            // Ambil atau buat profil baru
+            // 👇 FIX UTAMA: Simpan file fisik avatar langsung ke tabel USERS 👇
+            if ($request->hasFile('avatar')) {
+            // Hapus yang lama
+            if ($user->avatar && strlen($user->avatar) < 200) {
+                \Illuminate\Support\Facades\Storage::disk('public')->delete($user->avatar);
+            }
+            
+            // Kompres & Simpan
+            $file = $request->file('avatar');
+            $image = \Intervention\Image\Facades\Image::make($file)->resize(300, 300, function ($constraint) {
+                $constraint->aspectRatio();
+                $constraint->upsize();
+            })->encode('jpg', 75);
+
+            $filename = 'avatars/' . uniqid() . '.jpg';
+            \Illuminate\Support\Facades\Storage::disk('public')->put($filename, $image);
+            
+            $user->avatar = $filename;
+        }
+
+            $user->save(); // Simpan nama dan avatar ke tabel users
+
+            // 2. Update data detail (Phone & Birthday) ke tabel profiles
             $profile = \App\Models\Profile::firstOrCreate(['user_id' => $user->id]);
 
-            // 👇 FIX UTAMA: Ubah string kosong ("") menjadi null agar Database tidak error 👇
             $profile->phone = $request->filled('phone') ? $request->phone : null;
             $profile->birthday = $request->filled('birthday') ? $request->birthday : null;
 
-            // Jika ada file foto yang diunggah
-            if ($request->hasFile('avatar')) {
-                $path = $request->file('avatar')->store('avatars', 'public');
-                $profile->avatar = $path;
-            }
+            // (Hapus baris yang sebelumnya menyimpan avatar ke $profile)
 
             $profile->save();
 
@@ -290,7 +309,6 @@ class ApiAuthController extends Controller
             ], 200);
 
         } catch (\Exception $e) {
-            // Mencatat error asli ke dalam file log Laravel
             \Illuminate\Support\Facades\Log::error("Update Profile Error: " . $e->getMessage());
             
             return response()->json([
@@ -327,11 +345,30 @@ class ApiAuthController extends Controller
             $user->eo_phone = $request->eo_phone;
             $user->eo_instagram = $request->eo_instagram;
             $user->save();
+            // Cari semua admin
+$adminIds = \App\Models\AccountRole::where('role_id', 1)->pluck('user_id');
+$admins = \App\Models\User::whereIn('id', $adminIds)->get();
+
+if ($admins->count() > 0) {
+    // Kirim notifikasi ke Admin bahwa ada pengajuan EO baru
+    \Illuminate\Support\Facades\Notification::send($admins, new \App\Notifications\NewEoRequestNotification(auth()->user()));
+    foreach ($admins as $admin) {
+                FcmService::sendNotification(
+                    $admin->fcm_token, 
+                    'Pengajuan EO Baru 📢', 
+                    auth()->user()->name . ' mengajukan diri sebagai EO.',
+                    [
+                        'tipe' => 'pengajuan_eo' // 👈 PASTIKAN TIKET INI ADA
+    ]
+                );
+            }
+}
 
             return response()->json([
                 'success' => true,
                 'message' => 'Pengajuan Upgrade EO berhasil dikirim! Silakan tunggu persetujuan Admin.'
             ], 200);
+
 
         } catch (\Exception $e) {
             return response()->json([
@@ -339,6 +376,69 @@ class ApiAuthController extends Controller
                 'message' => 'Gagal mengirim pengajuan: ' . $e->getMessage()
             ], 500);
         }
+    }
+    public function updateFcmToken(Request $request)
+    {
+        $request->validate([
+            'fcm_token' => 'required|string',
+        ]);
+
+        // Ambil user yang sedang login
+        $user = $request->user(); 
+        
+        // Simpan tokennya
+        $user->fcm_token = $request->fcm_token;
+        $user->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'FCM Token berhasil disimpan.'
+        ]);
+    }
+    public function loginGoogle(Request $request)
+    {
+        $request->validate([
+            'email' => 'required|email',
+            'name' => 'required|string'
+        ]);
+
+        // Cek apakah email sudah ada di database
+        $user = User::where('email', $request->email)->first();
+
+        // Jika user belum ada, daftarkan secara otomatis
+        if (!$user) {
+            $user = User::create([
+                'name' => $request->name,
+                'email' => $request->email,
+                'password' => \Illuminate\Support\Facades\Hash::make(\Illuminate\Support\Str::random(24)), // Password acak
+                'is_active' => true, // Langsung aktif karena Google sudah terpercaya
+                'email_verified_at' => now(),
+            ]);
+
+            // Berikan role 'user' secara default
+            $roleUser = Role::where('name', 'user')->first();
+            if ($roleUser) {
+                $user->roles()->attach($roleUser->id);
+            }
+            
+            // Buatkan profil kosong
+            $user->profile()->create();
+        }
+
+        // Buatkan token Sanctum
+        $token = $user->createToken('univent_mobile_token')->plainTextToken;
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Login Google berhasil.',
+            'token' => $token,
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'role' => $user->role_name ?? 'USER',
+            ]
+        ], 200);
     }
     
 }

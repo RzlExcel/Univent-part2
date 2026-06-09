@@ -44,6 +44,7 @@ class EoRequestStatusNotification extends Notification
     {
         $statusText = $this->status === 'approved' ? 'Disetujui' : 'Ditolak';
         return [
+            'title' => 'Pengajuan Role Event Organizer',
             'status' => $this->status,
             'message' => 'Pengajuan Event Organizer Anda telah <b>' . $statusText . '</b> oleh Admin.',
         ];

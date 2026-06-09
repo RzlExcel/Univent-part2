@@ -3,6 +3,7 @@
 use App\Http\Controllers\EventController;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schedule;
+use App\Http\Controllers\NotificationController;
 use App\Models\Event;
 
 // ----------------------------------------------------
@@ -18,7 +19,6 @@ Route::middleware('auth')->group(function () {
     // Semua yang sudah login bisa lihat detail dan riwayat
     Route::get('/events/{id}', [EventController::class, 'show'])->name('events.show');
     Route::get('/event-history', [EventController::class, 'showHistory'])->name('user.event.history');
-    Route::get('/registration/{id}', [EventController::class, 'showRegistration'])->name('registration.show');
 
     // ----------------------------------------------------
     // KHUSUS EO & ADMIN (Manajemen Event & AI)
@@ -45,6 +45,10 @@ Route::middleware('auth')->group(function () {
         auth()->user()->unreadNotifications->markAsRead();
         return back();
     })->name('notifications.markAllRead')->middleware('auth');
+
+    Route::get('/notifications/{id}/click', [NotificationController::class, 'markAsReadAndRedirect'])
+         ->name('notifications.click')
+         ->middleware('auth');
 
     // ==========================================
     // FITUR AUTO EXPIRED EVENT SETIAP HARI

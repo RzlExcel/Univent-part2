@@ -34,6 +34,7 @@ class NewEventSubmittedNotification extends Notification
     public function toArray(object $notifiable): array
     {
         return [
+            'title' => 'Pengajuan Event',
             'status' => 'pending',
             'message' => 'Event baru <b>"' . $this->event->event_title . '"</b> dari ' . $this->event->organizer_name . ' menunggu persetujuan Anda.',
         ];

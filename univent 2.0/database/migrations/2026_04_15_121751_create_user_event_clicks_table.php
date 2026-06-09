@@ -16,7 +16,8 @@ return new class extends Migration
             
             // Relasi ke tabel events. 'cascadeOnDelete' memastikan jika event dihapus, histori kliknya ikut bersih.
             $table->foreignId('event_id')->constrained('events')->cascadeOnDelete();
-            
+
+            $table->foreignId('user_id')->nullable()->constrained('users')->cascadeOnDelete();            
             // Kolom untuk IP Address. Panjang maksimal 45 karakter untuk mendukung format IPv6.
             $table->string('ip_address', 45)->nullable();
             
@@ -31,8 +32,7 @@ return new class extends Migration
             // Baris ini akan mengunci ketiga kolom menjadi satu kesatuan.
             // Database akan otomatis menolak penyimpanan jika ada pengunjung
             // dengan IP dan User Agent yang sama me-refresh halaman berulang kali.
-            $table->unique(['event_id', 'ip_address', 'user_agent'], 'unique_user_click');
-        });
+            $table->unique(['event_id', 'user_id', 'ip_address', 'user_agent'], 'unique_user_click');        });
     }
 
     /**

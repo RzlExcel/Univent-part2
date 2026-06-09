@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\User;
+use App\Services\FcmService;
 
 class ApiAdminController extends Controller
 {
@@ -30,6 +31,15 @@ class ApiAdminController extends Controller
         $user->eo_request_status = 'approved';
         $user->save();
 
+        if (class_exists(\App\Notifications\EoRequestStatusNotification::class)) {
+            $user->notify(new \App\Notifications\EoRequestStatusNotification('approved'));
+        }
+        FcmService::sendNotification(
+            $user->fcm_token, 
+            'Pengajuan EO Disetujui! 🎉', 
+            'Selamat, pengajuan Upgrade EO kamu telah disetujui Admin.'
+        );
+
         return response()->json(['success' => true, 'message' => 'Pengajuan disetujui! User sekarang adalah EO.']);
     }
 
@@ -41,6 +51,16 @@ class ApiAdminController extends Controller
 
         $user->eo_request_status = 'rejected';
         $user->save();
+
+        if (class_exists(\App\Notifications\EoRequestStatusNotification::class)) {
+            $user->notify(new \App\Notifications\EoRequestStatusNotification('rejected'));
+        }
+
+        FcmService::sendNotification(
+            $user->fcm_token, 
+            'Pengajuan EO Ditolak 😔', 
+            'Mohon maaf, pengajuan Upgrade EO kamu ditolak oleh Admin.'
+        );
 
         return response()->json(['success' => true, 'message' => 'Pengajuan ditolak.']);
     }

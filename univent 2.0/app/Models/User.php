@@ -59,6 +59,7 @@ class User extends Authenticatable implements MustVerifyEmail
         'eo_pic_name',
         'eo_phone',
         'eo_instagram',
+        'fcm_token',
     ];
 
     /**
